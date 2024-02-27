@@ -1,0 +1,138 @@
+# This is a sample workflow to test for interacting with a given notebook.
+#
+# Takes inputs action, zone, type, instance_id, project_id all of which have defaults
+# (defaults to list all notebooks)
+#
+# This workflow gets the project and region from env variables
+# A region is retrieved from the GOOGLE_CLOUD_LOCATION system variable
+# If the project is not given as an input, the project of the calling workflow project
+# The full instance name is built from the instance name in the form
+# projects/{projectId}/locations/{location}/instances/{instanceId}
+#
+# the type can be "instance" or "user-managed", from this the version of the API to use is established
+# you can choose actions such as 
+# "get", 
+# "stop", 
+# "start",
+# "reset",
+# "checkUpgradability",
+# "upgrade"
+# "rollback",
+# "delete"
+# for the given notebook
+
+
+main:
+  params: [input]
+  steps:
+    - get_inputs:
+        assign:
+          - action: ${default(map.get(input, "action"), "get")}
+          - zone: ${default(map.get(input, "zone"), "a")}
+          - type: ${default(map.get(input, "type"), "instance")}
+          - instance_id: ${default(map.get(input, "instance_id"), "")}
+          - project_id: ${default(map.get(input, "project_id"), sys.get_env("GOOGLE_CLOUD_PROJECT_ID"))}
+          - update_firestore: ${default(map.get(input, "update_firestore"), "false")}
+
+    - init:
+        assign:
+            - region: ${sys.get_env("GOOGLE_CLOUD_LOCATION")}
+            - full_zone: '${region+"-"+zone}' 
+            
+            - parent: '${"projects/"+project_id+"/locations/"+full_zone}'
+            - full_instance: '${parent+"/instances/"+instance_id}'
+            - base_url: "https://notebooks.googleapis.com/"
+
+    - check_inputs:
+        switch:
+            - condition: ${instance_id == ""}
+              raise: "Input Error: you need to supply an instance_id"
+
+    - determine_api:
+        # Workbench instances are v2 of the API
+        switch:
+            - condition: ${type == "instance"}
+              assign:
+              - api_url: '${base_url+"v2/"}'
+            - condition: true
+              assign:
+              - api_url: '${base_url+"v1/"}'
+
+    - determine_action:
+        switch:
+          # Get actions
+          - condition: ${action == "get"}
+            assign:
+              - get_api_url: '${api_url+full_instance}'
+            next: get_notebook
+
+          # Post actions
+          - condition: ${action == "stop"}
+            next: post_notebook
+          - condition: ${action == "start"}
+            next: post_notebook  
+          - condition: ${action == "reset"}
+            next: post_notebook
+          - condition: ${action == "checkUpgradability"}
+            next: post_notebook
+          - condition: ${action == "upgrade"}
+            next: post_notebook
+          - condition: ${action == "rollback"}
+            next: post_notebook
+          - condition: ${action == "diagnose"}
+            next: post_notebook
+
+          # Delete actions
+          - condition: ${action == "delete"}
+            next: delete_notebook        
+
+    # Post is a generic call, appended with an appropriate action
+    - post_notebook:
+        call: http.post
+        args:
+            url: '${api_url+full_instance+":"+action}'
+            auth:
+                type: OAuth2
+                scopes: 'https://www.googleapis.com/auth/cloud-platform'
+        result: nbResult
+        next: complete
+
+    - delete_notebook:
+        call: http.delete 
+        args:
+            url: '${api_url+full_instance}'
+            auth:
+                type: OAuth2
+                scopes: 'https://www.googleapis.com/auth/cloud-platform'
+        result: nbResult
+        next: complete
+      
+    # Get info on a single Notebook Instance
+    - get_notebook:
+        try:
+          call: http.get
+          args:
+              url: ${get_api_url} 
+              auth:
+                  type: OAuth2
+                  scopes: 'https://www.googleapis.com/auth/cloud-platform'
+          result: nbResult
+
+        except:
+          as: e
+          steps:
+            - known_get_errors:
+                switch:
+                - condition: ${not("HttpError" in e.tags)}
+                  return: "Connection problem."
+                - condition: ${e.code == 404}
+                  return: ${"URL " + get_api_url + " wasn’t found. Check the instance id and the zone"}
+                - condition: ${e.code == 403}
+                  return: "Authentication error."
+            - unhandled_get_exception:
+                  raise: ${e}
+        next: complete
+
+
+    - complete:
+        return: ${nbResult.body}
