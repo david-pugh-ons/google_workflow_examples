@@ -1,25 +1,13 @@
-# This is a sample workflow to test for interacting with a notebook.
-#
-# Takes inputs action, zone, type, instance_id, project_id all of which have defaults
-# (defaults to list all notebooks)
-#
+# This is a sample workflow to list all notebooks for a given project
+# It will find all notebooks on v1 (user managed) and v2 (workbench instance) for a
+# project in zones a,b and c
+# It then adds/updates couments in a given Firestore collection based on teh notebooks found
+
 # This workflow gets the project and region from env variables
 # A region is retrieved from the GOOGLE_CLOUD_LOCATION system variable
 # If the project is not given as an input, the project of the calling workflow project
 # The full instance name is built from the instance name in the form
 # projects/{projectId}/locations/{location}/instances/{instanceId}
-#
-# the type can be "instance" or "user-managed", from this the version of the API to use is established
-# you can choose actions such as 
-# "get", 
-# "stop", 
-# "start",
-# "reset",
-# "checkUpgradability",
-# "upgrade"
-# "rollback",
-# for the given notebook
-# using list will return all notebooks for the calling project
 
 main:
   params: [input]
