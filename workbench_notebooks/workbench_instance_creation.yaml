@@ -26,6 +26,7 @@
 # Firestore options
 #   - add_firestore_doc: whether to add an appropriate Firestore document (optional, defaults to False) BOOLEAN
 #   - collection: name of the Firestore collection (optional, defaults to notebooks_list) STRING
+#   - firestore:project_id: defaults to the project_id given above if not supplied STRING
 
 main:
     params: [input]
@@ -58,6 +59,7 @@ main:
                 # Firestore options
                 - add_firestore_doc: ${default(map.get(input, "add_firestore_doc"), false)}
                 - collection: ${default(map.get(input, "collection"), "notebooks_list")}
+                - firestore_project_id: ${default(map.get(input, "firestore_project_id"), project_id)}
 
 
         - init:
@@ -209,7 +211,7 @@ main:
             try:
                 call: googleapis.firestore.v1.projects.databases.documents.patch
                 args:
-                    name: ${"projects/" + project_id + "/databases/" + database + "/documents/" + collection + "/" + instance_id}
+                    name: ${"projects/" + firestore_project_id + "/databases/" + database + "/documents/" + collection + "/" + instance_id}
                     body:
                         fields:
                             api:
