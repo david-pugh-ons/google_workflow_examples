@@ -1,0 +1,166 @@
+# This is a sample workflow to test for interacting with a notebook.
+#
+# Takes inputs action, zone, type, instance_id, project_id all of which have defaults
+# (defaults to list all notebooks)
+#
+# This workflow gets the project and region from env variables
+# A region is retrieved from the GOOGLE_CLOUD_LOCATION system variable
+# If the project is not given as an input, the project of the calling workflow project
+# The full instance name is built from the instance name in the form
+# projects/{projectId}/locations/{location}/instances/{instanceId}
+#
+# the type can be "instance" or "user-managed", from this the version of the API to use is established
+# you can choose actions such as 
+# "get", 
+# "stop", 
+# "start",
+# "reset",
+# "checkUpgradability",
+# "upgrade"
+# "rollback",
+# for the given notebook
+# using list will return all notebooks for the calling project
+
+main:
+  params: [input]
+  steps:
+    - get_inputs:
+        assign:
+          - project_id: ${default(map.get(input, "project_id"), sys.get_env("GOOGLE_CLOUD_PROJECT_ID"))}
+          - collection: ${default(map.get(input, "firestore_collection"), "notebooks_list")}
+          - firestore_project_id: ${default(map.get(input, "firestore_project_id"), project_id)}
+
+    - init:
+        assign:
+            - region: ${sys.get_env("GOOGLE_CLOUD_LOCATION")}
+            - action: "list"
+            - nbResult: []
+            - nb_zones: ["a", "b", "c"]
+            - nb_apis: ["v1", "v2"]
+            - listResult: []
+            - i: 0 
+            - j: 0
+            - base_url: "https://notebooks.googleapis.com/"
+            - database: "(default)"
+            - datetime_now: ${time.format(sys.now())}
+
+    # To list all notebooks you need to iterate through all zones in both V1 and V2 for the given project
+    - loop_all_instances:
+        steps:
+            - loop_through_zones:
+                for:
+                  value: zne         
+                  in: ${nb_zones}
+                  steps:
+                    - loop_through_apis:
+                        for:
+                          value: api
+                          in: ${nb_apis}
+                          steps:
+                            - list_nb_all:
+                                call: http.get
+                                args:
+                                  url: ${base_url+api+"/projects/"+project_id+"/locations/"+region+"-"+zne+"/instances"} 
+                                  auth:
+                                    type: OAuth2
+                                    scopes: 'https://www.googleapis.com/auth/cloud-platform'
+                                result: listResult
+
+                            - gather_results:
+                                  try:
+                                    for:
+                                      value: instance
+                                      in: ${listResult.body.instances}
+                                      steps:
+                                        - v1_extract:
+                                            switch:
+                                            - condition: ${api == "v1"}
+                                              assign:
+                                                - machine_type: ${text.split(instance.machineType, "/")[10]}
+                                                - metadata: ${instance.metadata}
+                                                - language: ${instance.labels.language}
+                                                - service_account: ${instance.serviceAccount}
+                                                - user_email: ${default(map.get(instance.metadata, "proxy-user-mail"), service_account)}
+                                                - type: "user-managed-notebook"
+                                            - condition: ${api == "v2"}
+                                              assign:
+                                                - machine_type: ${text.split(instance.gceSetup.machineType, "/")[10]}
+                                                - metadata : ${instance.gceSetup.metadata}
+                                                - language: "all"
+                                                - service_account : ${instance.gceSetup.serviceAccounts[0].email}
+                                                - user_email: ${default(map.get(instance.gceSetup.metadata, "proxy-user-mail"), service_account)}
+                                                - type: "workbench-instance"
+                                        - get_instance:
+                                            assign: 
+                                              - instance["api"]: ${api}
+                                              - instance["zone"]: ${zne}
+                                              - full_zone: ${region+"-"+zne}
+                                              - nbResult: ${list.concat(nbResult, instance)}
+                                              - instance_parent_list: ${text.split(instance.name, "/")}
+                                              - instance_id: ${instance_parent_list[5] }
+                                              
+                                        - update_firestore:
+                                            try:
+                                              call: googleapis.firestore.v1.projects.databases.documents.patch
+                                              args:
+                                                name: ${"projects/" + firestore_project_id + "/databases/" + database + "/documents/" + collection + "/" + instance_id}
+                                                body:
+                                                  fields:
+                                                    api:
+                                                      stringValue: ${api} 
+                                                    instanceName:
+                                                      stringValue: ${instance_id}
+                                                    userEmail:
+                                                      stringValue: ${user_email}
+                                                    location:
+                                                      stringValue: ${full_zone}
+                                                    region:
+                                                      stringValue: ${region}
+                                                    zone:
+                                                      stringValue: ${zne}
+                                                    projectId:
+                                                      stringValue: ${project_id}
+                                                    type:  
+                                                      stringValue: ${type}
+                                                    accessMode:
+                                                      stringValue: ${metadata["proxy-mode"]}    
+                                                    uri:
+                                                      stringValue: ${instance["proxyUri"]}
+                                                    machineType:
+                                                      stringValue: ${machine_type}
+                                                    createTime:
+                                                      stringValue: ${instance.createTime}
+                                                    language:
+                                                      stringValue: ${language}
+                                                    serviceAccount:
+                                                      stringValue: ${service_account}
+                                                    lastUpdated:
+                                                      stringValue: ${datetime_now}
+                                                    state:
+                                                      stringValue: ${instance.state}
+                                                    framework:
+                                                      stringValue: ${metadata["framework"]}
+                                                    version:
+                                                      stringValue: ${metadata["version"]}
+                                            except:            
+                                              as: e
+                                              steps:
+                                                  - known_fs_errors:
+                                                      switch:
+                                                      - condition: ${not("HttpError" in e.tags)}
+                                                        return: "Connection problem."
+                                                      - condition: ${e.code == 404}
+                                                        return: "Sorry, URL wasn’t found."
+                                                      - condition: ${e.code == 403}
+                                                        return: "Authentication error."
+                                                  - unhandled_fs_exception:
+                                                      raise: ${e}
+
+                                  except:            
+                                    as: e
+
+            - next_step:                 
+                next: complete
+
+    - complete:
+        return: ${nbResult}
