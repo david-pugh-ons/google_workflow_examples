@@ -228,18 +228,26 @@ main:
                                 stringValue: ${project_id}
                             type:
                                 stringValue: ${type}
-                            accessType:
+                            accessMode:
                                 stringValue: ${access_mode}
                             uri:
                                 stringValue: ${get_response.body["proxyUri"]}
-                            createDate:
+                            machineType:
+                                stringValue: ${machine_type}    
+                            createTime:
                                 stringValue: ${get_response.body["createTime"]}
                             language:
                                 stringValue: ${language} 
+                            serviceAccount:
+                                stringValue: ${service_account_email}
                             lastUpdated:
                                 stringValue: ${time.format(sys.now())}
                             state:
-                                stringValue: ${get_response.body["state"]}         
+                                stringValue: ${get_response.body["state"]}
+                            framework:
+                                stringValue: ${get_response.gceSetup.metadata["framework"]}
+                            version:
+                                stringValue: ${get_response.gceSetup.metadata["version"]}     
                 result: patch_response
             except:
                 as: e
