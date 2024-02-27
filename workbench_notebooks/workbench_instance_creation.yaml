@@ -1,0 +1,274 @@
+# This is a sample workflow to create an AI Workbench Instance.
+# It will also optionally add an entry representing the notebook into Firestore
+
+# - zone: Zone where Instance should be located (Optional, defaults to "a") STRING
+# - project_id: Project that the Instance should be placed, (Optional, defaults to project where Workflow is being run) STRING
+# - network_id: Network (Optional, defaults to "notebook-network") STRING
+# - subnet_id: Subnet (Optional, defaults to "notebook-subnet") STRING
+
+# - ref: short string to give the instance a unique name if a user has multiple Instances in same project, eg "01" (optional, defaults to "") STRING
+# - user_email: email of the user or group who will have access to the Instance STRING
+ 
+# - machine_type: optional machine type of underlying VM (Optional, defaults to "e2-standard-2") STRING
+# - service_account_email: email of the VM service account  STRING
+
+# - access_mode: either "mail" (single user) or "service_Account" (optional, defaults to mail) STRING
+# - image_family: Optional, defaults to "workbench-instances" STRING
+# - image_project: Optional, defaults to "cloud-notebooks-managed" STRING
+# - post_startup_script: Location of post start up script (optional, defaults to "") STRING
+# - instance_idle_timeout: Timeout before the instance auto shuts down when idle, in s (Optional, defaults to 10800) INTEGER
+# - disable_root: Whether to disable root access (optional, defaults to false) BOOLEAN
+# - disable_terminal: Whether to disable terminal access (optional, defaults to false) BOOLEAN
+# - disable_dataproc_kernels: Whether to disable dataprox kernel access (optional, defaults to false) BOOLEAN
+
+# Workflow define_settings
+#    - workflow_delay: the delay between creating the instance and checking its status, in seconds (optional, defaults to 15) INTEGER
+# Firestore options
+#   - add_firestore_doc: whether to add an appropriate Firestore document (optional, defaults to False) BOOLEAN
+#   - collection: name of the Firestore collection (optional, defaults to notebooks_list) STRING
+
+main:
+    params: [input]
+    steps:
+        - get_inputs:
+            assign:
+                
+                - zone: ${default(map.get(input, "zone"), "a")}
+                - project_id: ${default(map.get(input, "project_id"), sys.get_env("GOOGLE_CLOUD_PROJECT_ID"))}
+                - network_id: ${default(map.get(input, "network"),"notebook-network")}
+                - subnet_id: ${default(map.get(input, "subnet"), "notebook-subnet")}
+
+                - ref: ${default(map.get(input, "ref"), "")}
+                - user_email: ${map.get(input, "user_email")}
+                - machine_type: ${default(map.get(input, "machine_type"), "e2-standard-2")}
+                - service_account_email: ${map.get(input, "service_account")}
+
+                - access_mode: ${default(map.get(input, "access_mode"), "mail")}
+                - image_family: ${default(map.get(input, "image_family"), "workbench-instances")}
+                - image_project: ${default(map.get(input, "image_project"), "cloud-notebooks-managed")}
+                - post_startup_script: ${default(map.get(input, "post_startup_script"), "")}
+                - instance_idle_timeout: ${default(map.get(input, "instance_idle_timeout"), 10800)}
+                - disable_root: ${default(map.get(input, "disable_root"), false)}
+                - disable_terminal: ${default(map.get(input, "disable_terminal"), false)}
+                - disable_dataproc_kernels: ${default(map.get(input, "disable_dataproc_kernels"), false)} 
+
+                # Workflow define_settings
+                - workflow_delay: ${default(map.get(input, "delay"), 15)}
+
+                # Firestore options
+                - add_firestore_doc: ${default(map.get(input, "add_firestore_doc"), false)}
+                - collection: ${default(map.get(input, "collection"), "notebooks_list")}
+
+
+        - init:
+            steps:
+                - define_ref:
+                    switch:
+                        - condition: ${ref != ""}
+                          assign:
+                            - ref: '${"-"+ref}'
+
+                - define_settings:            
+                    assign:
+                        - datetime: ${time.parse(time.format(sys.now()))}
+                        - api_url: "https://notebooks.googleapis.com/v2/"
+                        - region: ${sys.get_env("GOOGLE_CLOUD_LOCATION")}
+                        - full_zone: '${region+"-"+zone}'
+                        - language: "all"
+                        - api: "v2"
+                        - database: "(default)" # connector only works with default
+                        - type: "workbench-instance"
+
+                        # Extract user name and create unique NB Name
+                        - user_name: '${text.split(user_email, "@")}'
+                        - user_name_list: '${text.split(user_name[0], ".")}'
+                        - instance_id: '${ text.substring("nb-"+user_name_list[1]+"-"+user_name_list[0]+ref, 0, 62)}'
+
+                        # Default response
+                        - create_response: ""
+                        - get_response: ""
+                        - patch_response: ""
+                        - create_status: 
+                            state: "unknown"
+                            comment: ""
+
+                - define_url:
+                    assign:     
+                    # Set up URL for call
+                      - parent: '${"projects/"+project_id+"/locations/"+full_zone}'
+                      - post_url: '${api_url+parent+"/instances?instanceId=" + instance_id}'
+
+        # Create the Instance
+        - create_workbench_instance:
+            steps:
+                - create:
+                    try:
+                        call: http.post
+                        args:
+                            url: '${post_url}'
+                            auth:
+                                type: OAuth2
+                                scopes: 'https://www.googleapis.com/auth/cloud-platform'
+                            body:
+                                instanceOwners: '${user_email}'
+                                gceSetup:
+                                    machineType: '${machine_type}'
+                                    serviceAccounts:
+                                        - email: '${service_account_email}'
+                                    vmImage:
+                                        project: ${image_project}
+                                        family: ${image_family}
+                                    networkInterfaces:
+                                        network: '${"projects/"+project_id+"/global/networks/"+network_id}'
+                                        subnet: '${"projects/"+project_id+"/regions/"+region+"/subnetworks/"+subnet_id}'
+                                    metadata:
+                                        proxy-mode: '${access_mode}'
+                                        proxy-user-mail: '${user_email}'
+                                        notebook-disable-downloads: 'true'
+                                        notebook-disable-nbconvert: 'true'
+                                        report-notebook-metrics: 'true'
+                                        report-system-health: 'true'
+                                        report-event-health: 'true'
+                                        install-monitoring-agent: 'true'
+                                        block-project-ssh-keys: 'true'
+                                        post-startup-script: '${string(post_startup_script)}'
+                                        notebook-disable-root: '${string(disable_root)}'
+                                        notebook-disable-terminal: '${string(disable_terminal)}'
+                                        disable-mixer: '${string(disable_dataproc_kernels)}'
+                                        idle-timeout-seconds: '${string(instance_idle_timeout)}'
+                            query:
+                                instanceId: '${instance_id}'    
+                        result: create_response
+                    except:
+                        as: e
+                        steps:
+                            - known_errors:
+                                switch:
+                                - condition: ${not("HttpError" in e.tags)}
+                                  assign: 
+                                    - create_status: "Connection problem."
+                                  next: complete
+
+                                - condition: ${e.code == 404}
+                                  assign: 
+                                    - create_status: 
+                                        state: False
+                                        comment: "URL wasn’t found."
+                                  next: complete
+
+                                - condition: ${e.code == 403}
+                                  assign:
+                                    - create_status: 
+                                        state: False
+                                        comment: "Authentication error."
+                                  next: complete
+
+                                - condition: ${e.code == 409}
+                                  assign:
+                                    - create_status: 
+                                        state: False
+                                        comment: "Notebook already exists."
+                                  next: complete
+
+                            - unhandled_exception:
+                                raise: ${e}
+                - update_status:
+                    assign: 
+                        - create_status: 
+                            state: True
+                            omment: "Success"
+        
+        # Add delay so that Instance is deplyed and we can extract details such as uri
+        - delay:
+            call: sys.sleep
+            args:
+                seconds: ${workflow_delay}
+            next: get_workbench_instance_details
+
+        # Get details of the Workbench Instance - some of these are assigned on creattion by Google
+        - get_workbench_instance_details:
+            call: http.get
+            args:
+                url: '${api_url+"projects/"+project_id+"/locations/"+full_zone+"/instances/"+instance_id}'
+                auth:
+                    type: OAuth2
+                    scopes: 'https://www.googleapis.com/auth/cloud-platform'
+            result: get_response
+            next: add_firestore_document      
+
+        # Check if we need to add a Firestore Document
+        - add_firestore_document:
+            switch:
+                - condition: ${add_firestore_doc == False}
+                  next: complete
+                - condition: ${add_firestore_doc == True}
+                  next: create_firestore_document
+        
+       
+        - create_firestore_document:
+            try:
+                call: googleapis.firestore.v1.projects.databases.documents.patch
+                args:
+                    name: ${"projects/" + project_id + "/databases/" + database + "/documents/" + collection + "/" + instance_id}
+                    body:
+                        fields:
+                            api:
+                                stringValue: ${api}
+                            instanceName:
+                                stringValue: ${instance_id}
+                            userEmail:
+                                stringValue: ${user_email}
+                            location:
+                                stringValue: ${full_zone}
+                            region:
+                                stringValue: ${region} 
+                            zone:
+                                stringValue: ${zone}
+                            projectId:
+                                stringValue: ${project_id}
+                            type:
+                                stringValue: ${type}
+                            accessType:
+                                stringValue: ${access_mode}
+                            uri:
+                                stringValue: ${get_response.body["proxyUri"]}
+                            createDate:
+                                stringValue: ${get_response.body["createTime"]}
+                            language:
+                                stringValue: ${language} 
+                            lastUpdated:
+                                stringValue: ${time.format(sys.now())}
+                            state:
+                                stringValue: ${get_response.body["state"]}         
+                result: patch_response
+            except:
+                as: e
+                steps:
+                    - known_fs_errors:
+                        switch:
+                        - condition: ${not("HttpError" in e.tags)}
+                          return: "Connection problem."
+                        - condition: ${e.code == 404}
+                          return: "Sorry, URL wasn’t found."
+                        - condition: ${e.code == 403}
+                          return: "Authentication error."
+                    - unhandled_fs_exception:
+                        raise: ${e}
+            next: complete
+
+        - complete:
+            steps:
+            - format_output:
+                assign:
+                    - complete_response:
+                        "firestore_status": 
+                            "added_to_firestore_flag": ${add_firestore_doc}
+                            "firestore_create_response":
+                                ${patch_response}
+                        "create_status": ${create_status}    
+                        "create_response":
+                            ${create_response}
+                        "get_response":    
+                            ${get_response}
+            - output:  
+                return: ${complete_response}
