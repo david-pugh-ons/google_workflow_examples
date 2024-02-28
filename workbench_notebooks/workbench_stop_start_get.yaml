@@ -1,0 +1,239 @@
+# This is a sample workflow to test for interacting with a given notebook.
+#
+# Takes inputs action, zone, type, instance_id, project_id all of which have defaults
+# (defaults to get notebooks details)
+#
+# Can optionally update Firestore
+#
+# Will return a summary of the notebook information as well as the get request body
+#
+# This workflow gets the project and region from env variables
+# A region is retrieved from the GOOGLE_CLOUD_LOCATION system variable
+# If the project is not given as an input, the project of the calling workflow project
+# The full instance name is built from the instance name in the form
+# projects/{projectId}/locations/{location}/instances/{instanceId}
+#
+# the type can be "instance" or "user-managed", from this the version of the API to use is established
+# you can choose the following actions  
+# "get", 
+# "stop", 
+# "start",
+# "reset",
+# for the given notebook
+
+
+main:
+  params: [input]
+  steps:
+    - get_inputs:
+        assign:
+          - action: ${default(map.get(input, "action"), "get")}
+          - zone: ${default(map.get(input, "zone"), "a")}
+          - type: ${default(map.get(input, "type"), "instance")}
+          - instance_id: ${default(map.get(input, "instance_id"), "")}
+          - project_id: ${default(map.get(input, "project_id"), sys.get_env("GOOGLE_CLOUD_PROJECT_ID"))}
+
+          # Workflow define_settings
+          - workflow_delay: ${default(map.get(input, "delay"), 30)}
+
+          # Firestore options
+          - update_firestore_doc_flag: ${default(map.get(input, "update_firestore"), false)}
+          - collection: ${default(map.get(input, "collection"), "notebooks_list")}
+          - firestore_project_id: ${default(map.get(input, "firestore_project_id"), project_id)}
+
+    - init:
+        assign:
+            - region: ${sys.get_env("GOOGLE_CLOUD_LOCATION")}
+            - full_zone: '${region+"-"+zone}' 
+            
+            - parent: '${"projects/"+project_id+"/locations/"+full_zone}'
+            - full_instance: '${parent+"/instances/"+instance_id}'
+            - base_url: "https://notebooks.googleapis.com/"
+
+            - database: "(default)"
+
+            - get_response: ""
+            - patch_response: ""
+
+
+    - check_inputs:
+        switch:
+            - condition: ${instance_id == ""}
+              raise: "Input Error: you need to supply an instance_id"
+
+    - determine_api:
+        # Workbench instances are v2 of the API
+        switch:
+            - condition: ${type == "instance"}
+              assign:
+              - api: "v2" 
+              - api_url: '${base_url+"v2/"}'
+            - condition: true
+              assign:
+              - api: "v1"
+              - api_url: '${base_url+"v1/"}'
+
+    - determine_action:
+        switch:
+          # Get actions
+          - condition: ${action == "get"}
+            next: get_notebook
+
+          # Post actions
+          - condition: ${action == "stop"}
+            next: post_notebook
+          - condition: ${action == "start"}
+            next: post_notebook  
+          - condition: ${action == "reset"}
+            next: post_notebook
+   
+
+    # Post is a generic call, appended with an appropriate action
+    - post_notebook:
+        try:
+          call: http.post
+          args:
+              url: '${api_url+full_instance+":"+action}'
+              auth:
+                  type: OAuth2
+                  scopes: 'https://www.googleapis.com/auth/cloud-platform'
+          result: post_result
+        except:
+          as: e
+          steps:
+            - known_post_errors:
+                switch:
+
+                - condition: ${e.code == 404}
+                  return: ${"URL " + api_url + full_instance +":" + action + " wasn’t found. Check the instance id and the zone"}
+                - condition: ${e.code == 403}
+                  return: "Authentication error."
+            - unhandled_post_exception:
+                  raise: ${e}
+        next: delay
+
+    - delay:
+        call: sys.sleep
+        args:
+          seconds: ${workflow_delay}
+        next: get_notebook
+
+      
+    # Get info on a single Notebook Instance
+    - get_notebook:
+        try:
+          call: http.get
+          args:
+              url: '${api_url+full_instance}'
+              auth:
+                  type: OAuth2
+                  scopes: 'https://www.googleapis.com/auth/cloud-platform'
+          result: get_result
+
+        except:
+          as: e
+          steps:
+            - unhandled_get_exception:
+                  raise: ${e}
+        next: extract_notebook_details
+
+    - extract_notebook_details:
+          switch:
+          - condition: ${api == "v1"}
+            assign:
+              - instance: ${get_result.body}
+              - machine_type: ${text.split(instance.machineType, "/")[10]}
+              - metadata: ${instance.metadata}
+              - language: ${instance.labels.language}
+              - service_account: ${instance.serviceAccount}
+              - user_email: ${default(map.get(instance.metadata, "proxy-user-mail"), service_account)}
+              - type: "user-managed-notebook"
+              
+          - condition: ${api == "v2"}
+            assign:
+              - instance: ${get_result.body}
+              - machine_type: ${text.split(instance.gceSetup.machineType, "/")[10]}
+              - metadata : ${instance.gceSetup.metadata}
+              - language: "all"
+              - service_account : ${instance.gceSetup.serviceAccounts[0].email}
+              - user_email: ${default(map.get(instance.gceSetup.metadata, "proxy-user-mail"), service_account)}
+              - type: "workbench-instance"
+          next: update_firestore_document
+
+   # Check if we need to add a Firestore Document
+    - update_firestore_document:
+        switch:
+        - condition: ${update_firestore_doc_flag == False}
+          next: complete
+        - condition: ${update_firestore_doc_flag == True}
+          next: create_firestore_document
+        
+    - create_firestore_document:
+            # only need to update fiels that might have changed
+            try:
+                call: googleapis.firestore.v1.projects.databases.documents.patch
+                args:
+                    name: ${"projects/" + firestore_project_id + "/databases/" + database + "/documents/" + collection + "/" + instance_id}
+                    body:
+                        fields:
+                            api:
+                                stringValue: ${api}
+                            instanceName:
+                                stringValue: ${instance_id}
+                            userEmail:
+                                stringValue: ${user_email}
+                            location:
+                                stringValue: ${full_zone}
+                            region:
+                                stringValue: ${region} 
+                            zone:
+                                stringValue: ${zone}
+                            projectId:
+                                stringValue: ${project_id}
+                            type:
+                                stringValue: ${type}
+                            accessMode:
+                                stringValue: ${metadata["proxy-mode"]}
+                            uri:
+                                stringValue: ${instance["proxyUri"]}
+                            machineType:
+                                stringValue: ${machine_type}    
+                            createTime:
+                                stringValue: ${instance["createTime"]}
+                            language:
+                                stringValue: ${language} 
+                            serviceAccount:
+                                stringValue: ${service_account}
+                            lastUpdated:
+                                stringValue: ${time.format(sys.now())}
+                            state:
+                                stringValue: ${instance["state"]}
+                            framework:
+                                stringValue: ${metadata["framework"]}
+                            version:
+                                stringValue: ${metadata["version"]}  
+                result: patch_response
+            except:
+                as: e
+                raise: ${e}
+            next: complete
+
+    - complete:
+            steps:
+            - format_output:
+                assign:
+                    - complete_response:
+                        "notebook_summary":
+                          "action": ${action}
+                          "name": ${instance_id}
+                          "machine_type": ${machine_type}
+                          "state": ${instance["state"]}
+                          "uri": ${instance["proxyUri"]}
+                        "firestore_status": 
+                            "update_firestore_flag": ${update_firestore_doc_flag}
+                            "firestore_create_response":
+                                ${patch_response}
+                        "get_response":    
+                            ${get_response}
+            - output:  
+                return: ${complete_response}
