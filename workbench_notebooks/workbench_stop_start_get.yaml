@@ -20,6 +20,8 @@
 # "start",
 # "reset",
 # for the given notebook
+# if Stopping or starting or reseting, a delay is insterted between sending teh request and checking the 
+# notebook status to wait for the action to complete
 
 
 main:
