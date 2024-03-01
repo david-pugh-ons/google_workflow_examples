@@ -1,0 +1,92 @@
+# Workflow to extract notebook information from a Get or List command on the Notebook API
+# It will also standardise information across V1 and V2 of the API (so we have a consistent 
+# representation of both user managed and workbench instances).main
+# Intended as a child Workflow to be used to create consistent information on notebooks
+#
+# Inputs:
+# You need to supply one or the other of these:
+# - get_response: the full response from the API when making a get request STRING
+# - get_response_body: the body entry of response from the API when making a get request or the instance entry when making a list call STRING
+#  
+
+
+main:
+  params: [input]
+  steps:
+    - get_inputs:
+        assign:
+          - get_response: ${default(map.get(input, "get_response"), Null)}
+          - get_response_body: ${default(map.get(input, "get_response_body"), Null)}
+
+    - check_inputs:
+        switch:
+            - condition: ${map.get(get_response, "body") == Null and get_response_body == Null}
+              raise: "Input Error: you need to supply the full response from a get call to the Notebook API, or the body from the response"
+            - condition: ${get_response == Null and get_response_body == Null}  
+              raise: "Input Error: you need to supply the response from a get call to the Notebook API, or the get body"
+            - condition: ${get_response != Null}
+              assign:
+                - instance : ${map.get(get_response, "body")}
+            - condition: ${get_response_body != Null}
+              assign:
+                - instance : ${get_response_body}
+
+    - extract_values:
+        steps:
+          # Extract general values from response
+          - extract_general_values:
+              assign:
+                - full_name: ${instance["name"]}
+                - full_name_lst: ${text.split(full_name, "/")}
+                - name: ${full_name_lst[5]}
+                - project_id: ${full_name_lst[0]}
+                - location: ${full_name_lst[3]}
+                - location_lst: ${text.split(location, "-")}
+                - zone: ${location_lst[2]}
+                - region: ${location_lst[0] + "-" + location_lst[1]}
+          # see what API response we have and extract depending on format
+          - extract_api_specific_values:
+              switch:
+                - condition: ${not("gceSetup" in instance)} 
+                  assign:
+                    - api: "v1"
+                    - machine_type: ${text.split(instance.machineType, "/")[10]}
+                    - metadata: ${instance.metadata}
+                    - language: ${instance.labels.language}
+                    - service_account: ${instance.serviceAccount}
+                    - user_email: ${default(map.get(instance.metadata, "proxy-user-mail"), service_account)}
+                    - type: "user-managed-notebook"
+                - condition: true
+                  assign:
+                    - api: "v2"
+                    - machine_type: ${text.split(instance.gceSetup.machineType, "/")[10]}
+                    - metadata : ${instance.gceSetup.metadata}
+                    - language: "all"
+                    - service_account : ${instance.gceSetup.serviceAccounts[0].email}
+                    - user_email: ${default(map.get(instance.gceSetup.metadata, "proxy-user-mail"), service_account)}
+                    - type: "workbench-instance"
+
+          - create_standardised_instance_map:
+              assign:
+                - std_instance:
+                    access_mode: ${metadata["proxy-mode"]}
+                    api: ${api}
+                    create_time: ${instance["createTime"]}
+                    framework: ${default(map.get(metadata, "framework"), "pending")}
+                    language: ${language}
+                    location: ${location}
+                    machine_type: ${machine_type}
+                    full_name: ${full_name}
+                    name: ${name}
+                    project_id: ${project_id}
+                    region: ${region}
+                    service_account: ${service_account}
+                    state: ${instance["state"]}
+                    type: ${type}
+                    uri: ${instance["proxyUri"]}
+                    user_email: ${user_email}
+                    version: ${default(map.get(metadata, "version"), "pending")}
+                    zone: ${zone}
+                  
+    - complete:
+        return: ${std_instance}              
