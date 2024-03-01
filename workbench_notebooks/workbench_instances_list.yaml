@@ -8,6 +8,8 @@
 # If the project is not given as an input, the project of the calling workflow project
 # The full instance name is built from the instance name in the form
 # projects/{projectId}/locations/{location}/instances/{instanceId}
+#
+
 
 main:
   params: [input]
@@ -15,7 +17,7 @@ main:
     - get_inputs:
         assign:
           - project_id: ${default(map.get(input, "project_id"), sys.get_env("GOOGLE_CLOUD_PROJECT_ID"))}
-          - collection: ${default(map.get(input, "firestore_collection"), "notebooks_list")}
+          - firestore_collection: ${default(map.get(input, "firestore_collection"), "user")}
           - firestore_project_id: ${default(map.get(input, "firestore_project_id"), project_id)}
 
     - init:
@@ -60,90 +62,27 @@ main:
                                       value: instance
                                       in: ${listResult.body.instances}
                                       steps:
-                                        - v1_extract:
-                                            switch:
-                                            - condition: ${api == "v1"}
-                                              assign:
-                                                - machine_type: ${text.split(instance.machineType, "/")[10]}
-                                                - metadata: ${instance.metadata}
-                                                - language: ${instance.labels.language}
-                                                - service_account: ${instance.serviceAccount}
-                                                - user_email: ${default(map.get(instance.metadata, "proxy-user-mail"), service_account)}
-                                                - type: "user-managed-notebook"
-                                            - condition: ${api == "v2"}
-                                              assign:
-                                                - machine_type: ${text.split(instance.gceSetup.machineType, "/")[10]}
-                                                - metadata : ${instance.gceSetup.metadata}
-                                                - language: "all"
-                                                - service_account : ${instance.gceSetup.serviceAccounts[0].email}
-                                                - user_email: ${default(map.get(instance.gceSetup.metadata, "proxy-user-mail"), service_account)}
-                                                - type: "workbench-instance"
-                                        - get_instance:
-                                            assign: 
-                                              - instance["api"]: ${api}
-                                              - instance["zone"]: ${zne}
-                                              - full_zone: ${region+"-"+zne}
-                                              - nbResult: ${list.concat(nbResult, instance)}
-                                              - instance_parent_list: ${text.split(instance.name, "/")}
-                                              - instance_id: ${instance_parent_list[5] }
-                                              
-                                        - update_firestore:
-                                            try:
-                                              call: googleapis.firestore.v1.projects.databases.documents.patch
-                                              args:
-                                                name: ${"projects/" + firestore_project_id + "/databases/" + database + "/documents/" + collection + "/" + instance_id}
-                                                body:
-                                                  fields:
-                                                    api:
-                                                      stringValue: ${api} 
-                                                    instanceName:
-                                                      stringValue: ${instance_id}
-                                                    userEmail:
-                                                      stringValue: ${user_email}
-                                                    location:
-                                                      stringValue: ${full_zone}
-                                                    region:
-                                                      stringValue: ${region}
-                                                    zone:
-                                                      stringValue: ${zne}
-                                                    projectId:
-                                                      stringValue: ${project_id}
-                                                    type:  
-                                                      stringValue: ${type}
-                                                    accessMode:
-                                                      stringValue: ${metadata["proxy-mode"]}    
-                                                    uri:
-                                                      stringValue: ${instance["proxyUri"]}
-                                                    machineType:
-                                                      stringValue: ${machine_type}
-                                                    createTime:
-                                                      stringValue: ${instance.createTime}
-                                                    language:
-                                                      stringValue: ${language}
-                                                    serviceAccount:
-                                                      stringValue: ${service_account}
-                                                    lastUpdated:
-                                                      stringValue: ${datetime_now}
-                                                    state:
-                                                      stringValue: ${instance.state}
-                                                    framework:
-                                                      stringValue: ${metadata["framework"]}
-                                                    version:
-                                                      stringValue: ${metadata["version"]}
-                                            except:            
-                                              as: e
-                                              steps:
-                                                  - known_fs_errors:
-                                                      switch:
-                                                      - condition: ${not("HttpError" in e.tags)}
-                                                        return: "Connection problem."
-                                                      - condition: ${e.code == 404}
-                                                        return: "Sorry, URL wasn’t found."
-                                                      - condition: ${e.code == 403}
-                                                        return: "Authentication error."
-                                                  - unhandled_fs_exception:
-                                                      raise: ${e}
+                                        - get_instance_details:
+                                            call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.run
+                                            args:
+                                              workflow_id: extract_and_standardise_notebook_api
+                                              argument:
+                                                  get_response_body: ${instance}
+                                            result: extraction_execution_results  
 
+                                        - collate_results:  
+                                            assign: 
+                                              - nbResult: ${list.concat(nbResult, instance)}
+                                          
+                                        - update_firestore_document:
+                                            call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.run
+                                            args:
+                                                workflow_id: patch_firestore_notebook_document
+                                                argument:
+                                                    firestore_project_id: ${firestore_project_id}
+                                                    collection: ${firestore_collection}
+                                                    instance: ${extraction_execution_results}
+                                            result: fs_execution_result
                                   except:            
                                     as: e
 
