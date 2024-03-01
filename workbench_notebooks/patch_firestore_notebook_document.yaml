@@ -1,0 +1,84 @@
+# Workflow to patch a Firestore Document with standardised information about Notebooks
+#
+# Intended as a child Workflow to be used to create consistent documents
+#
+#
+# Inputs:
+# - firestore_project_id:  Project where the Firestore database resides
+# - firestore_region: Region where the Firestore database resides
+# - firestore_database: Firestore database
+# - collection: collection name, can be subcollection string, e.g, "notebooks" or "user/tools/notebooks"
+# - instance: standardised instance values from the child workflow-workbench-standardise-get-output workflow
+#
+
+main:
+    params: [input]
+    steps:
+      - get_inputs:
+          assign:
+            - firestore_project_id: ${default(map.get(input, "firestore_project_id"), sys.get_env("GOOGLE_CLOUD_PROJECT_ID"))}
+            - firestore_region: ${default(map.get(input, "firestore_project_id"), sys.get_env("GOOGLE_CLOUD_LOCATION"))}
+            - firestore_database: ${default(map.get(input, "firestore_database"), "(default)")}
+            - collection: ${default(map.get(input, "collection"), "notebooks_list")}
+            - instance: ${map.get(input, "instance")}
+
+      - init:
+          assign:
+            - datetime_now: ${time.format(sys.now())}
+
+      - check_inputs:
+          switch:
+            - condition: ${instance == Null OR map.get(instance, "name") == Null}
+              raise: "Input Error: you need to supply an instance map, and it must contain the instance name key."      
+
+      - update_firestore:
+            try:
+              call: googleapis.firestore.v1.projects.databases.documents.patch
+              args:
+                name: ${"projects/" + firestore_project_id + "/databases/" + firestore_database + "/documents/" + collection + "/" + instance.name}
+                body:
+                  fields:
+                    api:
+                      stringValue: ${default(map.get(instance, "api"), "")}
+                    instanceName:
+                      stringValue: ${default(map.get(instance, "name"), "")}
+                    userEmail:
+                      stringValue: ${default(map.get(instance, "user_email"), "")}
+                    location:
+                      stringValue: ${default(map.get(instance, "location"), "")}
+                    region:
+                      stringValue: ${default(map.get(instance, "region"), "")}
+                    zone:
+                      stringValue: ${default(map.get(instance, "zone"), "")}
+                    projectId:
+                      stringValue: ${default(map.get(instance, "project_id"), "")}
+                    type:  
+                      stringValue: ${default(map.get(instance, "type"), "")}
+                    accessMode:
+                      stringValue: ${default(map.get(instance, "access_mode"), "")} 
+                    uri:
+                      stringValue: ${default(map.get(instance, "uri"), "")}
+                    machineType:
+                      stringValue: ${default(map.get(instance, "machine_type"), "")}
+                    createTime:
+                      stringValue: ${default(map.get(instance, "create_time"), "")}
+                    language:
+                      stringValue: ${default(map.get(instance, "language"), "")}
+                    serviceAccount:
+                      stringValue: ${default(map.get(instance, "service_account"), "")}
+                    lastUpdated:
+                      stringValue: ${datetime_now}
+                    state:
+                      stringValue: ${default(map.get(instance, "state"), "")}
+                    framework:
+                      stringValue: ${default(map.get(instance, "framework"), "")}
+                    version:
+                      stringValue: ${default(map.get(instance, "version"), "")}
+              result: patch_response
+            except:            
+               as: e
+               steps:
+                 - unhandled_fs_exception:
+                           raise: ${e}
+      - complete:
+          return: ${patch_response}
