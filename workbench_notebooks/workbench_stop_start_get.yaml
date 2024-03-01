@@ -20,7 +20,7 @@
 # "start",
 # "reset",
 # for the given notebook
-# if Stopping or starting or reseting, a delay is insterted between sending teh request and checking the 
+# if Stopping or starting or resetting, a delay is insterted between sending the request and checking the 
 # notebook status to wait for the action to complete
 
 
@@ -57,6 +57,10 @@ main:
             - get_response: ""
             - patch_response: ""
 
+            - execution_results: {} # results from each execution
+            - execution_results.success: {} # successful executions saved under 'success' key
+            - execution_results.failure: {} # failed executions saved under 'failure' key
+
 
     - check_inputs:
         switch:
@@ -89,7 +93,6 @@ main:
           - condition: ${action == "reset"}
             next: post_notebook
    
-
     # Post is a generic call, appended with an appropriate action
     - post_notebook:
         try:
@@ -131,7 +134,6 @@ main:
                   type: OAuth2
                   scopes: 'https://www.googleapis.com/auth/cloud-platform'
           result: get_result
-
         except:
           as: e
           steps:
@@ -140,27 +142,13 @@ main:
         next: extract_notebook_details
 
     - extract_notebook_details:
-          switch:
-          - condition: ${api == "v1"}
-            assign:
-              - instance: ${get_result.body}
-              - machine_type: ${text.split(instance.machineType, "/")[10]}
-              - metadata: ${instance.metadata}
-              - language: ${instance.labels.language}
-              - service_account: ${instance.serviceAccount}
-              - user_email: ${default(map.get(instance.metadata, "proxy-user-mail"), service_account)}
-              - type: "user-managed-notebook"
-              
-          - condition: ${api == "v2"}
-            assign:
-              - instance: ${get_result.body}
-              - machine_type: ${text.split(instance.gceSetup.machineType, "/")[10]}
-              - metadata : ${instance.gceSetup.metadata}
-              - language: "all"
-              - service_account : ${instance.gceSetup.serviceAccounts[0].email}
-              - user_email: ${default(map.get(instance.gceSetup.metadata, "proxy-user-mail"), service_account)}
-              - type: "workbench-instance"
-          next: update_firestore_document
+        call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.run
+        args:
+          workflow_id: extract_and_standardise_notebook_api_response
+          argument:
+            get_response: ${get_result}
+        result: get_execution_results
+        next: update_firestore_document
 
    # Check if we need to add a Firestore Document
     - update_firestore_document:
@@ -171,71 +159,24 @@ main:
           next: create_firestore_document
         
     - create_firestore_document:
-            # only need to update fiels that might have changed
-            try:
-                call: googleapis.firestore.v1.projects.databases.documents.patch
-                args:
-                    name: ${"projects/" + firestore_project_id + "/databases/" + database + "/documents/" + collection + "/" + instance_id}
-                    body:
-                        fields:
-                            api:
-                                stringValue: ${api}
-                            instanceName:
-                                stringValue: ${instance_id}
-                            userEmail:
-                                stringValue: ${user_email}
-                            location:
-                                stringValue: ${full_zone}
-                            region:
-                                stringValue: ${region} 
-                            zone:
-                                stringValue: ${zone}
-                            projectId:
-                                stringValue: ${project_id}
-                            type:
-                                stringValue: ${type}
-                            accessMode:
-                                stringValue: ${metadata["proxy-mode"]}
-                            uri:
-                                stringValue: ${instance["proxyUri"]}
-                            machineType:
-                                stringValue: ${machine_type}    
-                            createTime:
-                                stringValue: ${instance["createTime"]}
-                            language:
-                                stringValue: ${language} 
-                            serviceAccount:
-                                stringValue: ${service_account}
-                            lastUpdated:
-                                stringValue: ${time.format(sys.now())}
-                            state:
-                                stringValue: ${instance["state"]}
-                            framework:
-                                stringValue: ${metadata["framework"]}
-                            version:
-                                stringValue: ${metadata["version"]}  
-                result: patch_response
-            except:
-                as: e
-                raise: ${e}
-            next: complete
+        call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.run
+        args:
+          workflow_id: patch_firestore_notebook_document
+          argument:
+            firestore_project_id: ${firestore_project_id}
+            instance: ${get_execution_results}
+        result: fs_execution_result
 
     - complete:
             steps:
             - format_output:
                 assign:
                     - complete_response:
-                        "notebook_summary":
-                          "action": ${action}
-                          "name": ${instance_id}
-                          "machine_type": ${machine_type}
-                          "state": ${instance["state"]}
-                          "uri": ${instance["proxyUri"]}
+                        "notebook_summary": ${get_execution_results}
                         "firestore_status": 
                             "update_firestore_flag": ${update_firestore_doc_flag}
                             "firestore_create_response":
                                 ${patch_response}
-                        "get_response":    
-                            ${get_response}
+                        "api_get_resonse": ${get_result}        
             - output:  
                 return: ${complete_response}
