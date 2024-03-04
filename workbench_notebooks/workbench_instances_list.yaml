@@ -24,7 +24,7 @@ main:
         assign:
             - region: ${sys.get_env("GOOGLE_CLOUD_LOCATION")}
             - action: "list"
-            - nbResult: []
+            - all_notebooks: []
             - nb_zones: ["a", "b", "c"]
             - nb_apis: ["v1", "v2"]
             - listResult: []
@@ -72,7 +72,7 @@ main:
 
                                         - collate_results:  
                                             assign: 
-                                              - nbResult: ${list.concat(nbResult, instance)}
+                                              - all_notebooks: ${list.concat(all_notebooks, instance)}
                                           
                                         - update_firestore_document:
                                             call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.run
@@ -90,4 +90,4 @@ main:
                 next: complete
 
     - complete:
-        return: ${nbResult}
+        return: ${all_notebooks}
