@@ -65,7 +65,7 @@ main:
                                         - get_instance_details:
                                             call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.run
                                             args:
-                                              workflow_id: extract_and_standardise_notebook_api
+                                              workflow_id: workflow-workbench-standardise-get-output
                                               argument:
                                                   get_response_body: ${instance}
                                             result: extraction_execution_results  
@@ -77,7 +77,7 @@ main:
                                         - update_firestore_document:
                                             call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.run
                                             args:
-                                                workflow_id: patch_firestore_notebook_document
+                                                workflow_id: workflow-workbench-patch-firestore-doc-user-focussed
                                                 argument:
                                                     firestore_project_id: ${firestore_project_id}
                                                     collection: ${firestore_collection}
