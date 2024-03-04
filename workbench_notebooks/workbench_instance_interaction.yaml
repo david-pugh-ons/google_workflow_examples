@@ -1,7 +1,11 @@
 # This is a sample workflow to test for interacting with a given notebook.
 #
 # Takes inputs action, zone, type, instance_id, project_id all of which have defaults
-# (defaults to list all notebooks)
+# (defaults to get notebooks details)
+#
+# Can optionally update Firestore
+#
+# Will return a summary of the notebook information as well as the get request body
 #
 # This workflow gets the project and region from env variables
 # A region is retrieved from the GOOGLE_CLOUD_LOCATION system variable
@@ -10,16 +14,14 @@
 # projects/{projectId}/locations/{location}/instances/{instanceId}
 #
 # the type can be "instance" or "user-managed", from this the version of the API to use is established
-# you can choose actions such as 
+# you can choose the following actions  
 # "get", 
 # "stop", 
 # "start",
 # "reset",
-# "checkUpgradability",
-# "upgrade"
-# "rollback",
-# "delete"
 # for the given notebook
+# if Stopping or starting or resetting, a delay is insterted between sending the request and checking the 
+# notebook status to wait for the action to complete
 
 
 main:
@@ -32,7 +34,15 @@ main:
           - type: ${default(map.get(input, "type"), "instance")}
           - instance_id: ${default(map.get(input, "instance_id"), "")}
           - project_id: ${default(map.get(input, "project_id"), sys.get_env("GOOGLE_CLOUD_PROJECT_ID"))}
-          - update_firestore: ${default(map.get(input, "update_firestore"), "false")}
+
+          # Workflow define_settings
+          - workflow_delay: ${default(map.get(input, "delay"), 5)}
+          - polling_delay: ${default(map.get(input, "polling_delay"), 20)}
+
+          # Firestore options
+          - update_firestore_doc_flag: ${default(map.get(input, "update_firestore"), false)}
+          - collection: ${default(map.get(input, "collection"), "notebooks_list")}
+          - firestore_project_id: ${default(map.get(input, "firestore_project_id"), project_id)}
 
     - init:
         assign:
@@ -42,6 +52,16 @@ main:
             - parent: '${"projects/"+project_id+"/locations/"+full_zone}'
             - full_instance: '${parent+"/instances/"+instance_id}'
             - base_url: "https://notebooks.googleapis.com/"
+
+            - database: "(default)"
+
+            - get_response: ""
+            - patch_response: ""
+
+            - execution_results: {} # results from each execution
+            - execution_results.success: {} # successful executions saved under 'success' key
+            - execution_results.failure: {} # failed executions saved under 'failure' key
+
 
     - check_inputs:
         switch:
@@ -53,86 +73,133 @@ main:
         switch:
             - condition: ${type == "instance"}
               assign:
+              - api: "v2" 
               - api_url: '${base_url+"v2/"}'
             - condition: true
               assign:
+              - api: "v1"
               - api_url: '${base_url+"v1/"}'
 
     - determine_action:
         switch:
           # Get actions
           - condition: ${action == "get"}
-            assign:
-              - get_api_url: '${api_url+full_instance}'
             next: get_notebook
 
           # Post actions
           - condition: ${action == "stop"}
+            assign:
+              - required_state: "STOPPED"
             next: post_notebook
           - condition: ${action == "start"}
+            assign:
+              - required_state: "ACTIVE"
             next: post_notebook  
           - condition: ${action == "reset"}
+            assign:
+              - required_state: "ACTIVE"
             next: post_notebook
-          - condition: ${action == "checkUpgradability"}
-            next: post_notebook
-          - condition: ${action == "upgrade"}
-            next: post_notebook
-          - condition: ${action == "rollback"}
-            next: post_notebook
-          - condition: ${action == "diagnose"}
-            next: post_notebook
-
-          # Delete actions
-          - condition: ${action == "delete"}
-            next: delete_notebook        
-
+   
     # Post is a generic call, appended with an appropriate action
     - post_notebook:
-        call: http.post
-        args:
-            url: '${api_url+full_instance+":"+action}'
-            auth:
-                type: OAuth2
-                scopes: 'https://www.googleapis.com/auth/cloud-platform'
-        result: nbResult
-        next: complete
-
-    - delete_notebook:
-        call: http.delete 
-        args:
-            url: '${api_url+full_instance}'
-            auth:
-                type: OAuth2
-                scopes: 'https://www.googleapis.com/auth/cloud-platform'
-        result: nbResult
-        next: complete
-      
-    # Get info on a single Notebook Instance
-    - get_notebook:
         try:
-          call: http.get
+          call: http.post
           args:
-              url: ${get_api_url} 
+              url: '${api_url+full_instance+":"+action}'
               auth:
                   type: OAuth2
                   scopes: 'https://www.googleapis.com/auth/cloud-platform'
-          result: nbResult
-
+          result: post_result
         except:
           as: e
           steps:
-            - known_get_errors:
+            - known_post_errors:
                 switch:
-                - condition: ${not("HttpError" in e.tags)}
-                  return: "Connection problem."
+
                 - condition: ${e.code == 404}
-                  return: ${"URL " + get_api_url + " wasn’t found. Check the instance id and the zone"}
+                  return: ${"URL " + api_url + full_instance +":" + action + " wasn’t found. Check the instance id and the zone"}
                 - condition: ${e.code == 403}
                   return: "Authentication error."
-            - unhandled_get_exception:
+            - unhandled_post_exception:
                   raise: ${e}
+        next: delay
+
+    - delay:
+        call: sys.sleep
+        args:
+          seconds: ${workflow_delay}
+        next: wait_for_action_completion
+
+    # Get info on a single Notebook Instance
+    - get_notebook:
+        call: http.get
+        args:
+          url: ${api_url+full_instance} 
+          auth:
+            type: OAuth2
+            scopes: 'https://www.googleapis.com/auth/cloud-platform'
+        result: get_result
         next: complete
 
+    # poll until action completed
+    - wait_for_action_completion:
+        steps:
+          - check_action:
+              call: http.get
+              args:
+                url: ${api_url+full_instance} 
+                auth:
+                    type: OAuth2
+                    scopes: 'https://www.googleapis.com/auth/cloud-platform'
+              result: get_result
+
+          - check_if_complete:
+              switch:
+                - condition: ${get_result.body.state == required_state}
+                  next: extract_notebook_details
+
+          - wait:
+              call: sys.sleep
+              args:
+                  seconds: ${polling_delay}
+              next: check_action
+
+    - extract_notebook_details:
+        call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.run
+        args:
+          workflow_id: workflow-workbench-standardise-get-output
+          argument:
+            get_response: ${get_result}
+        result: get_execution_results
+        next: update_firestore_document
+
+   # Check if we need to add a Firestore Document
+    - update_firestore_document:
+        switch:
+        - condition: ${update_firestore_doc_flag == False}
+          next: complete
+        - condition: ${update_firestore_doc_flag == True}
+          next: create_firestore_document
+        
+    - create_firestore_document:
+        call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.run
+        args:
+          workflow_id: workflow-workbench-patch-firestore-doc
+          argument:
+            firestore_project_id: ${firestore_project_id}
+            instance: ${get_execution_results}
+        result: fs_execution_result
 
     - complete:
-        return: ${nbResult.body}
+            steps:
+            - format_output:
+                assign:
+                    - complete_response:
+                        "notebook_summary": ${get_execution_results}
+                        "firestore_status": 
+                            "update_firestore_flag": ${update_firestore_doc_flag}
+                            "firestore_create_response":
+                                ${patch_response}
+                        "api_get_resonse": ${get_result}        
+            - output:  
+                return: ${complete_response}
