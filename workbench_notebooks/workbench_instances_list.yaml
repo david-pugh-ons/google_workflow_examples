@@ -36,58 +36,61 @@ main:
 
     # To list all notebooks you need to iterate through all zones in both V1 and V2 for the given project
     - loop_all_instances:
-        steps:
-            - loop_through_zones:
-                for:
-                  value: zne         
-                  in: ${nb_zones}
-                  steps:
-                    - loop_through_apis:
-                        for:
-                          value: api
-                          in: ${nb_apis}
-                          steps:
-                            - list_nb_all:
-                                call: http.get
-                                args:
-                                  url: ${base_url+api+"/projects/"+project_id+"/locations/"+region+"-"+zne+"/instances"} 
-                                  auth:
-                                    type: OAuth2
-                                    scopes: 'https://www.googleapis.com/auth/cloud-platform'
-                                result: listResult
 
-                            - gather_results:
+          for:
+            value: zne         
+            in: ${nb_zones}
+  
+            steps:
+              - loop_through_apis:
+
+                    for:
+                            value: api
+                            in: ${nb_apis}
+                            steps:
+                              - list_nb_all:
+                                  call: http.get
+                                  args:
+                                    url: ${base_url+api+"/projects/"+project_id+"/locations/"+region+"-"+zne+"/instances"} 
+                                    auth:
+                                      type: OAuth2
+                                      scopes: 'https://www.googleapis.com/auth/cloud-platform'
+                                  result: listResult
+
+                              - gather_results:
                                   try:
-                                    for:
-                                      value: instance
-                                      in: ${listResult.body.instances}
-                                      steps:
-                                        - get_instance_details:
-                                            call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.run
-                                            args:
-                                              workflow_id: workflow-workbench-standardise-get-output
-                                              argument:
-                                                  get_response_body: ${instance}
-                                            result: extraction_execution_results  
-
-                                        - collate_results:  
-                                            assign: 
-                                              - all_notebooks: ${list.concat(all_notebooks, instance)}
-                                          
-                                        - update_firestore_document:
-                                            call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.run
-                                            args:
-                                                workflow_id: workflow-workbench-patch-firestore-doc-user-focussed
+                                    parallel:
+                                      shared: [all_notebooks] 
+                                      for:
+                                        value: instance
+                                        in: ${listResult.body.instances}
+                                        steps:
+                              
+                                          - get_instance_details:
+                                              call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.run
+                                              args:
+                                                workflow_id: workflow-workbench-standardise-get-output
                                                 argument:
-                                                    firestore_project_id: ${firestore_project_id}
-                                                    collection: ${firestore_collection}
-                                                    instance: ${extraction_execution_results}
-                                            result: fs_execution_result
-                                  except:            
+                                                    get_response_body: ${instance}
+                                              result: extraction_execution_results  
+
+                                          - collate_results:  
+                                              assign: 
+                                                - all_notebooks: ${list.concat(all_notebooks, instance)}
+                                            
+                                          - update_firestore_document:
+                                              call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.run
+                                              args:
+                                                  workflow_id: workflow-workbench-patch-firestore-doc-user-focussed
+                                                  argument:
+                                                      firestore_project_id: ${firestore_project_id}
+                                                      collection: ${firestore_collection}
+                                                      instance: ${extraction_execution_results}
+                                              result: fs_execution_result
+                                  except:
                                     as: e
 
-            - next_step:                 
-                next: complete
+
 
     - complete:
         return: ${all_notebooks}
