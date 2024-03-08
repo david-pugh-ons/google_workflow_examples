@@ -1,3 +1,14 @@
+# Workflow to add bindibgs toa  dataset
+# Inputs:
+# project
+# - project_id - project where the dataset is located
+# - dataset_id - id of the dataset 
+# - role_id - the full role id that you wont bound
+# - group_emails - a list of group emails to bind (optional)
+# - service_account_emails - a list of service account emails to bind (optional)
+# - user_emails- a list of user emails to bind (optional)
+# on, two or all of the group, user and service account emails must be supplied
+
 main:
     params: [input]
     steps:
