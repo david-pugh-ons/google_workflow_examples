@@ -6,57 +6,93 @@ main:
             - project_id: ${default(map.get(input, "project_id"), sys.get_env("GOOGLE_CLOUD_PROJECT_ID"))}
             - dataset_id: ${default(map.get(input, "dataset_id"), Null)}
             - role_id: ${default(map.get(input, "role_id"), Null)}
-            - group_email: ${default(map.get(input, "group_email"), Null)}
-            - service_account_email: ${default(map.get(input, "service_account_email"), Null)}
-            - user_email: ${default(map.get(input, "user_email"), Null)}  
+            - group_emails: ${default(map.get(input, "group_emails"), [])}
+            - service_account_emails: ${default(map.get(input, "service_account_emails"), [])}
+            - user_emails: ${default(map.get(input, "user_emails"), [])} 
 
+    - define_variables:
+        assign:
+            - new_acl_list: []
+
+    # gather all the principals together with the role in a list
     - prepare_acl:
         steps:
-            - define_access_entry:
+            - check_inputs:
                 switch:
-                    - condition: ${group_email != Null}
-                      assign:
-                            - new_acl:
-                                role: ${role_id}
-                                groupByEmail: ${group_email}
-
-                    - condition: ${service_account_email != Null}
-                      assign:
-                            - new_acl:
-                                role: ${role_id}
-                                userByEmail: ${service_account_email}
-
-                    - condition: ${user_email != Null}
-                      assign:
-                            - new_acl:
-                                role: ${role_id}
-                                userByEmail: ${user_email}
-
-                    - condition: true
+                    - condition: ${ service_account_emails == Null and  user_emails == Null and group_emails == Null }
                       return: "you need to supply a service account, user or group email"
+
+            - define_access_entry:
+                steps:
+                  - get_groups:
+                      switch:
+                        - condition: ${len(group_emails) == 0}
+                          next: get_service_accounts
+                        - condition: true   
+                          for:
+                                value: grp
+                                in: ${group_emails}
+                                steps:
+                                    - loop_groups:
+                                        assign:
+                                            - new_grp_acl:
+                                                role: ${role_id}
+                                                groupByEmail: ${grp}
+                                            - new_acl_list: ${list.concat(new_acl_list, new_grp_acl)}
+                    
+                  - get_service_accounts:
+                      switch:
+                        - condition: ${len(service_account_emails) == 0}
+                          next: get_user_accounts
+                        - condition: true   
+                          for:
+                                value: sa
+                                in: ${service_account_emails}
+                                steps:
+                                    - loop_sas:
+                                        assign:
+                                            - new_sa_acl:
+                                                role: ${role_id}
+                                                userByEmail: ${sa}
+                                            - new_acl_list: ${list.concat(new_acl_list, new_sa_acl)}
+
+                  - get_user_accounts:
+                      switch:
+                        - condition: ${len(user_emails) == 0}
+                          next: get_current_binding
+                        - condition: true   
+                          for:
+                            value: user
+                            in: ${user_emails}
+                            steps:
+                                - loop_users:
+                                    assign:
+                                        - new_user_acl:
+                                            role: ${role_id}
+                                            userByEmail: ${user}
+                                        - new_acl_list: ${list.concat(new_acl_list, new_user_acl)}
+
 
     - get_current_binding:
         call: googleapis.bigquery.v2.datasets.patch
         args:
-            datasetId: "analysis_area_info"
-            projectId: ${project_id}
+          datasetId: "analysis_area_info"
+          projectId: ${project_id}
         result: get_result
-
-
 
     - add_to_existing_acl:
         assign:
           - access_list: ${get_result.access}
-          - access_list: ${list.concat(access_list, new_acl)} 
+          - access_list: ${list.concat(access_list, new_acl_list)} 
 
     - apply_binding:
         call: googleapis.bigquery.v2.datasets.patch
         args:
-            datasetId: ${dataset_id}
-            projectId: ${project_id}
-            body:
-                access: ${access_list}   
+          datasetId: ${dataset_id}
+          projectId: ${project_id}
+          body:
+              access: ${access_list}   
         result: binding_result
 
-    - returnOutput:
+    - return_output:
             return: '${binding_result}'
