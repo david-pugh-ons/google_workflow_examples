@@ -7,6 +7,7 @@
 # - group_emails - a list of group emails to bind (optional)
 # - service_account_emails - a list of service account emails to bind (optional)
 # - user_emails- a list of user emails to bind (optional)
+# - method: whether to replace or append the principals to the given role
 # on, two or all of the group, user and service account emails must be supplied
 
 main:
@@ -20,10 +21,12 @@ main:
             - group_emails: ${default(map.get(input, "group_emails"), [])}
             - service_account_emails: ${default(map.get(input, "service_account_emails"), [])}
             - user_emails: ${default(map.get(input, "user_emails"), [])} 
+            - method: ${default(map.get(input, "method"), "append")}
 
     - define_variables:
         assign:
             - new_acl_list: []
+            - tmp_acl_list: []
 
     # gather all the principals together with the role in a list
     - prepare_acl:
@@ -55,22 +58,23 @@ main:
                       switch:
                         - condition: ${len(service_account_emails) == 0}
                           next: get_user_accounts
-                        - condition: true   
+                        - condition: true
                           for:
                                 value: sa
                                 in: ${service_account_emails}
                                 steps:
-                                    - loop_sas:
-                                        assign:
-                                            - new_sa_acl:
-                                                role: ${role_id}
-                                                userByEmail: ${sa}
-                                            - new_acl_list: ${list.concat(new_acl_list, new_sa_acl)}
+                                  - loop_sas:
+                                      assign:
+                                        - new_sa_acl:
+                                            role: ${role_id}
+                                            userByEmail: ${sa}
+                                        - new_acl_list: ${list.concat(new_acl_list, new_sa_acl)}
 
                   - get_user_accounts:
                       switch:
                         - condition: ${len(user_emails) == 0}
                           next: get_current_binding
+
                         - condition: true   
                           for:
                             value: user
@@ -83,7 +87,6 @@ main:
                                             userByEmail: ${user}
                                         - new_acl_list: ${list.concat(new_acl_list, new_user_acl)}
 
-
     - get_current_binding:
         call: googleapis.bigquery.v2.datasets.patch
         args:
@@ -92,9 +95,30 @@ main:
         result: get_result
 
     - add_to_existing_acl:
+        switch:
+          - condition: ${method == "append"}
+            assign:
+              - access_list: ${get_result.access}
+              - access_list: ${list.concat(access_list, new_acl_list)} 
+            next: apply_binding
+
+          - condition: true
+            for:
+              value: existing_acl
+              in: ${get_result.access}
+              steps:
+                - create_lst_without_role:
+                    switch:
+                      - condition: ${ existing_acl.role != role_id }
+                        assign:
+                          - tmp_acl_list: ${ list.concat(tmp_acl_list, existing_acl) }
+            next: update_tmp_binding
+
+    # If using replace, use the reduced acl list
+    - update_tmp_binding:
         assign:
-          - access_list: ${get_result.access}
-          - access_list: ${list.concat(access_list, new_acl_list)} 
+          - access_list: ${list.concat(tmp_acl_list, new_acl_list)} 
+        next: apply_binding
 
     - apply_binding:
         call: googleapis.bigquery.v2.datasets.patch
