@@ -84,7 +84,7 @@ main:
         switch:
           # Get actions
           - condition: ${action == "get"}
-            next: check_current_status
+            next: get_notebook_info
 
           # Post actions
           - condition: ${action == "stop"}
@@ -219,7 +219,7 @@ main:
                 return: ${complete_response}
 
 
-# Get info on a single Notebook Instance
+                    # Get info on a single Notebook Instance
 get_notebook:
   params: [api_url]
   steps:
