@@ -62,6 +62,10 @@ main:
                 - collection: ${default(map.get(input, "collection"), "notebooks_list")}
                 - firestore_project_id: ${default(map.get(input, "firestore_project_id"), project_id)}
 
+                # WIP and Review Bucket roles
+                - analyst_wip_bucket_role_id: ${default(map.get(input, "wip_bucket_role_id"), Null)}
+                - analyst_wip_dataset_role_id: ${map.get(input, "wip_dataset_role_id")}
+
 
         - init:
             steps:
@@ -79,9 +83,18 @@ main:
                             - project_list: ${text.split(project_short, "-")}
                             - research_area: '${project_list[2]}'
                         - condition: ${research_area != Null}  
-                          next: define_settings  
+                          next: define_wip_and_review_areas
                         - condition: true
                           return: ${"Cannot extract research area from the project name " + project_id + ". If this is not an IDS analysis project please supply the unique research area variable in the input"}           
+
+                - define_wip_and_review_areas:
+                    assign:
+                        - wip_bucket: ${project_id + "-" + research_area + "-wip"}
+                        - review_bucket: ${project_id + "-" + research_area + "-review"}
+                        - dataset_prefix: ${text.replace_all(research_area, "-", "_")}
+                        - wip_dataset: ${dataset_prefix + "_wip_notebook"}
+                        - review_dataset: ${dataset_prefix + "_review_notebook"}
+                    next: define_settings   
 
                 - define_settings:            
                     assign:
@@ -95,11 +108,10 @@ main:
                         - type: "workbench-instance"
                         - datetime_now: ${time.format(sys.now())}
 
-                        # Extract user name and create unique NB Name
+                        # Extract user name and create unique NB Name and service account name
                         - user_name: '${text.split(user_email, "@")}'
                         - user_name_list: '${text.split(user_name[0], ".")}'
-                        - instance_id: '${ text.substring("nb-" + research_area + ref + "-" + user_name_list[1] + "-" + user_name_list[0]+ref, 0, 62)}'
-
+                        - instance_id: '${ text.substring("nb-" + research_area + "-" + user_name_list[1] + "-" + user_name_list[0]+ref, 0, 62)}'
                         - service_account_name: '${ "n-" + research_area +  ref + "-" + user_name_list[1] + "-" + user_name_list[0]}'
 
                         # Default response
@@ -116,6 +128,8 @@ main:
                       - workbench_parent: '${"projects/"+project_id+"/locations/"+full_zone}'
                       - workbench_post_url: '${api_url + workbench_parent + "/instances?instanceId=" + instance_id}'
 
+  
+            
 
         # Create service_account
         - service_account:
@@ -229,8 +243,10 @@ main:
                         - create_status: 
                             state: True
                             omment: "Success"
-        
-        # Add delay so that Instance is deplyed and we can extract details such as uri
+
+
+
+        # Add delay so that Instance is deployed and we can extract details such as uri
         - delay:
             call: sys.sleep
             args:
@@ -261,7 +277,7 @@ main:
         - add_firestore_document:
             switch:
                 - condition: ${add_firestore_doc == False}
-                  next: complete
+                  next: update_bindings
                 - condition: ${add_firestore_doc == True}
                   next: create_firestore_document
         
@@ -273,12 +289,55 @@ main:
                     firestore_project_id: ${firestore_project_id}
                     instance: ${get_execution_results}
             result: fs_execution_result
-            next: complete
+            next: update_bindings
+
+
+        - update_bindings:
+            steps:
+                - update_wip_dataset:
+                    call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.run
+                    args:
+                        workflow_id: workflow-bigquery-dataset-binding
+                        argument:
+                            project_id: ${project_id}
+                            dataset_id: ${wip_dataset}
+                            role_id: ${analyst_wip_dataset_role_id}
+                            service_account_emails: ${[service_account_email]}
+                - update_review_dataset:
+                    call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.run
+                    args:
+                        workflow_id: workflow-bigquery-dataset-binding
+                        argument:
+                            project_id: ${project_id}
+                            dataset_id: ${review_dataset}
+                            role_id: ${analyst_wip_dataset_role_id}
+                            service_account_emails: ${[service_account_email]}
+                - update_wip_bucket:
+                    call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.run
+                    args:
+                        workflow_id: workflow--storage-binding
+                        argument:
+                            project_id: ${project_id}
+                            bucket: ${wip_bucket}
+                            role_id: ${analyst_wip_bucket_role_id}
+                            members: ${["serviceAccount:"+service_account_email]}   
+                - update_review_bucket:
+                    call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.run
+                    args:
+                        workflow_id: workflow--storage-binding
+                        argument:
+                            project_id: ${project_id}
+                            bucket: ${review_bucket}
+                            role_id: ${analyst_wip_bucket_role_id}
+                            members: ${["serviceAccount:"+service_account_email]}                         
+            next: complete                 
 
         - complete:
             steps:
             - format_output:
                 assign:
+                    - datasets:
+                        - ${wip_dataset}
                     - complete_response:
                         "firestore_status": 
                             "added_to_firestore_flag": ${add_firestore_doc}
