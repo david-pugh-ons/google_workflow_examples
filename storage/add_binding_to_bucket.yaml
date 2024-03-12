@@ -1,0 +1,88 @@
+# This workflow will update permissions on a Storage Bucket
+# Inputs:
+# - bucket
+# - project_id
+# - members: list of memebers to add/replace for teh given role, including the type, e.g, ["user:david.pugh@ons.gov.uk"]
+# - role_id: the full role id to be bound
+# - method: whether to append users or replace for the role
+
+
+
+main:
+    params: [input]
+    steps:
+    - get_inputs:
+        assign:
+            - bucket: ${map.get(input, "bucket")}
+            - project_id: ${default(map.get(input, "project_id"), sys.get_env("GOOGLE_CLOUD_PROJECT_ID"))}
+            - members: ${map.get(input, "members")}
+            - role_id: ${map.get(input, "role_id")}
+            - method: ${default(map.get(input, "method"), "append")}
+
+    - define_variables:
+        assign:
+            - new_acl_list: []
+            - tmp_acl_list: []
+
+    - get_info:
+        call: googleapis.storage.v1.buckets.get
+        args:
+            bucket: ${bucket}
+            projection: full
+            userProject: ${project_id}
+        result: get_response 
+        next: get_iam_policy
+
+    - get_iam_policy:
+        call: googleapis.storage.v1.buckets.getIamPolicy
+        args:
+            bucket: ${bucket}
+            userProject: ${project_id}
+        result: get_iam_response 
+        next: prepare_bindings
+
+    - prepare_bindings:
+        steps:
+            - prepare_new_acl:
+                assign:
+                    - new_single_binding:
+                        members : ${members}
+                        role: ${role_id}
+
+            - check_method:
+                switch:
+                    - condition: ${method == "replace"}
+                      steps:
+                        - remove_existing_acl:
+                            for:
+                                value: existing_acl
+                                in: ${get_iam_response.bindings}
+                                steps:
+                                    - create_lst_without_role:
+                                        switch:
+                                            - condition: ${ existing_acl.role != role_id }
+                                              assign:
+                                                    - tmp_acl_list: ${ list.concat(tmp_acl_list, existing_acl) }
+                        - assign_bindings:                            
+                            assign:  
+                                - new_acl_list: ${list.concat(tmp_acl_list, new_single_binding)}
+
+                     
+                    - condition: ${method == "append"}
+                      assign:                
+                            - new_acl_list: ${list.concat(get_iam_response.bindings, new_single_binding)}
+        next: apply_binding    
+
+    - apply_binding:
+        call: googleapis.storage.v1.buckets.setIamPolicy
+        args:
+            bucket: ${bucket}
+            userProject: ${project_id}
+            body:
+                 bindings: ${new_acl_list}
+        result: set_response
+        next: complete      
+ 
+    
+    - complete:
+        return: '${set_response}'
