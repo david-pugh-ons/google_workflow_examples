@@ -1,0 +1,56 @@
+# This is a sample workflow to apply a project level binding
+#
+# - project_id: the project name where the policy will be applied
+# - members: list of the memebers who will have the binding, in form ["user:david.pugh@ons.gov.uk"] 
+# - role_id: the full id of the role to apply
+# - method: whether to append or replace members on this role
+
+main:
+    params: [input]
+    steps:
+    - get_inputs:
+        assign:
+                - project_id: ${default(map.get(input, "project_id"), sys.get_env("GOOGLE_CLOUD_PROJECT_ID"))}
+                - members: ${map.get(input, "members")}
+                - role_id: ${map.get(input, "role_id")}
+                - method: ${default(map.get(input, "method"), "append")}
+        next: define_new_policy
+
+    - define_new_policy:
+        assign:
+            - new_policy:
+                role: ${role_id}
+                members: ${members}
+        next: get_policy        
+
+    - get_policy:
+        call: http.post
+        args:
+            url: '${"https://cloudresourcemanager.googleapis.com/v1/projects/" + project_id + ":getIamPolicy"}'
+            auth:
+                type: OAuth2
+                scopes: 'https://www.googleapis.com/auth/cloud-platform'
+        result: get_result
+        next: extract_current_policies
+
+    - extract_current_policies:
+        assign:
+            - existing_policies_list: ${get_result.body.bindings}
+            - new_policies_list: ${list.concat(existing_policies_list, new_policy)}
+        next: apply_policy
+
+    - apply_policy:
+        call: http.post
+        args:
+            url: '${"https://cloudresourcemanager.googleapis.com/v1/projects/" + project_id + ":setIamPolicy"}'
+            body:
+                policy:
+                    bindings: ${new_policies_list}
+            auth:
+                type: OAuth2
+                scopes: 'https://www.googleapis.com/auth/cloud-platform'
+        result: set_result
+        next: complete      
+
+    - complete:
+        return: ${new_policies_list}
