@@ -37,8 +37,10 @@ main:
 
 Other workflows can be called as child workflows to simplify and reuse code. The workflows listen below can be used for exmple to create teh service account used by an instance and also add bindings to allow the instance to access WIP buckets and datasets. 
 
-## Service Accounts
+## IAM
  - creation of service account
+ - apply binding to a service account
+ - apply project level binding
 
 ## Firestore
 - patching a document ina given database/collection
