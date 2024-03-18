@@ -19,6 +19,7 @@ main:
           - project_id: ${default(map.get(input, "project_id"), sys.get_env("GOOGLE_CLOUD_PROJECT_ID"))}
           - firestore_collection: ${default(map.get(input, "firestore_collection"), "user")}
           - firestore_project_id: ${default(map.get(input, "firestore_project_id"), project_id)}
+          - research_area:  ${default(map.get(input, "research_area"), Null)}
 
     - init:
         assign:
@@ -72,6 +73,7 @@ main:
                                                 workflow_id: workflow-workbench-standardise-get-output
                                                 argument:
                                                     get_response_body: ${instance}
+                                                    research_area: ${research_area}
                                               result: extraction_execution_results  
 
                                           - collate_results:  
