@@ -17,20 +17,28 @@ main:
         assign:
           - get_response: ${default(map.get(input, "get_response"), Null)}
           - get_response_body: ${default(map.get(input, "get_response_body"), Null)}
+          - research_area: ${default(map.get(input, "research_area"), Null)}
 
     - check_inputs:
         switch:
             - condition: ${map.get(get_response, "body") == Null and get_response_body == Null}
               raise: "Input Error: you need to supply the full response from a get call to the Notebook API, or the body from the response"
             - condition: ${get_response == Null and get_response_body == Null}  
-              raise: "Input Error: you need to supply the response from a get call to the Notebook API, or the get body"
+              raise: "Input Error: you need to supply the response from a get call to the Notebook API, or the get body" 
             - condition: ${get_response != Null}
               assign:
                 - instance : ${map.get(get_response, "body")}
             - condition: ${get_response_body != Null}
               assign:
                 - instance : ${get_response_body}
-
+            
+    - check_response:
+        switch:
+          - condition: ${map.get(instance, "name") == Null}
+            assign:
+              - std_instance: Null
+            next: complete 
+    
     - extract_values:
         steps:
           # Extract general values from response
@@ -39,11 +47,29 @@ main:
                 - full_name: ${instance["name"]}
                 - full_name_lst: ${text.split(full_name, "/")}
                 - name: ${full_name_lst[5]}
-                - project_id: ${full_name_lst[0]}
+                - project_id: ${full_name_lst[1]}
+
                 - location: ${full_name_lst[3]}
                 - location_lst: ${text.split(location, "-")}
                 - zone: ${location_lst[2]}
                 - region: ${location_lst[0] + "-" + location_lst[1]}
+                - research_area: ${research_area}
+
+          - extract_research_area:
+              switch:
+                - condition: ${research_area == Null AND text.find_all("ons-ids-analysis", project_id) == Null }
+                  assign:
+                    - project_short: ${text.replace_all(project_id, "ons-ids-analysis", "")}
+                    - project_list: ${text.split(project_short, "-")}
+                    - research_area: '${project_list[2]}'
+                  next: extract_api_specific_values  
+                - condition: ${research_area != Null}  
+                  next: extract_api_specific_values
+                - condition: true
+                  assign:
+                    - research_area: "unkwn"
+                  next: extract_api_specific_values  
+
           # see what API response we have and extract depending on format
           - extract_api_specific_values:
               switch:
@@ -52,7 +78,7 @@ main:
                     - api: "v1"
                     - machine_type: ${text.split(instance.machineType, "/")[10]}
                     - metadata: ${instance.metadata}
-                    - language: ${instance.labels.language}
+                    - language: ${default(map.get(instance.labels, "language"), "")}
                     - service_account: ${instance.serviceAccount}
                     - user_email: ${default(map.get(instance.metadata, "proxy-user-mail"), service_account)}
                     - type: "user-managed-notebook"
@@ -87,6 +113,7 @@ main:
                     user_email: ${user_email}
                     version: ${default(map.get(metadata, "version"), "pending")}
                     zone: ${zone}
+                    research_area: ${research_area}
                   
     - complete:
-        return: ${std_instance}              
+        return: ${std_instance}                           
