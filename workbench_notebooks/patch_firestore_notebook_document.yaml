@@ -1,15 +1,3 @@
-# Workflow to patch a Firestore Document with standardised information about Notebooks
-#
-# Intended as a child Workflow to be used to create consistent documents
-#
-#
-# Inputs:
-# - firestore_project_id:  Project where the Firestore database resides
-# - firestore_region: Region where the Firestore database resides
-# - firestore_database: Firestore database
-# - collection: collection name, can be subcollection string, e.g, "notebooks" or "user/tools/notebooks"
-# - instance: standardised instance values from the child workflow-workbench-standardise-get-output workflow
-#
 
 main:
     params: [input]
@@ -19,7 +7,7 @@ main:
             - firestore_project_id: ${default(map.get(input, "firestore_project_id"), sys.get_env("GOOGLE_CLOUD_PROJECT_ID"))}
             - firestore_region: ${default(map.get(input, "firestore_project_id"), sys.get_env("GOOGLE_CLOUD_LOCATION"))}
             - firestore_database: ${default(map.get(input, "firestore_database"), "(default)")}
-            - collection: ${default(map.get(input, "collection"), "notebooks_list")}
+            - collection: ${default(map.get(input, "collection"), "user_ex2")}
             - instance: ${map.get(input, "instance")}
 
       - init:
@@ -35,7 +23,7 @@ main:
             try:
               call: googleapis.firestore.v1.projects.databases.documents.patch
               args:
-                name: ${"projects/" + firestore_project_id + "/databases/" + firestore_database + "/documents/" + collection + "/" + instance.name}
+                name: ${"projects/" + firestore_project_id + "/databases/" + firestore_database + "/documents/" + collection + "/" + instance.user_email +  "/workspace/workbench/notebooks/" + instance.name}
                 body:
                   fields:
                     api:
@@ -74,6 +62,9 @@ main:
                       stringValue: ${default(map.get(instance, "framework"), "")}
                     version:
                       stringValue: ${default(map.get(instance, "version"), "")}
+                    researchArea:
+                      stringValue: ${default(map.get(instance, "research_area"), "")}
+
               result: patch_response
             except:            
                as: e
