@@ -31,7 +31,7 @@ main:
         assign:
           - action: ${default(map.get(input, "action"), "get")}
           - zone: ${default(map.get(input, "zone"), "a")}
-          - type: ${default(map.get(input, "type"), "instance")}
+          - type: ${default(map.get(input, "type"), "workbench-instance")}
           - instance_id: ${default(map.get(input, "instance_id"), "")}
           - project_id: ${default(map.get(input, "project_id"), sys.get_env("GOOGLE_CLOUD_PROJECT_ID"))}
 
@@ -71,7 +71,7 @@ main:
     - determine_api:
         # Workbench instances are v2 of the API
         switch:
-            - condition: ${type == "instance"}
+            - condition: ${type == "workbench-instance"}
               assign:
               - api: "v2" 
               - api_url: '${base_url+"v2/"}'
