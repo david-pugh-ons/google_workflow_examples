@@ -1,5 +1,6 @@
 # This is a sample workflow to create an AI Workbench Instance.
 # It will also optionally add an entry representing the notebook into Firestore
+# This relies on a numbe rof child workflows, that are are included in this repo
 
 # - zone: Zone where Instance should be located (Optional, defaults to "a") STRING
 # - project_id: Project that the Instance should be placed, (Optional, defaults to project where Workflow is being run) STRING
@@ -41,8 +42,9 @@ main:
                 - research_area: ${default(map.get(input, "research_area"), Null)}
 
                 - ref: ${default(map.get(input, "ref"), "")}
-                - user_email: ${map.get(input, "user_email")}
-                - machine_type: ${default(map.get(input, "machine_type"), "e2-standard-2")}
+                - user_email: ${default(map.get(input, "user_email"), Null)}
+                - instance_id: ${default(map.get(input, "instance_id"), Null)}
+                - machine_type: ${default(map.get(input, "machine_type"), "e2-standard-4")}
                 - service_account_email: ${default(map.get(input, "service_account"), Null)}
 
                 - access_mode: ${default(map.get(input, "access_mode"), "mail")}
@@ -55,7 +57,7 @@ main:
                 - disable_dataproc_kernels: ${default(map.get(input, "disable_dataproc_kernels"), false)} 
 
                 # Workflow define_settings
-                - workflow_delay: ${default(map.get(input, "delay"), 15)}
+                - workflow_delay: ${default(map.get(input, "delay"), 30)}
 
                 # Firestore options
                 - add_firestore_doc: ${default(map.get(input, "add_firestore_doc"), false)}
@@ -69,6 +71,14 @@ main:
 
         - init:
             steps:
+                - check_inputs:
+                    switch:
+                       - condition: ${access_mode == "mail" and user_email == Null } 
+                         return: "You need to supply a user email if you are using single user access (mail) access mode"
+                       - condition: ${access_mode == "service_account" and service_account_email == Null } 
+                         return: "You need to supply a service account email if you are using sa access access mode"
+
+
                 - define_ref:
                     switch:
                         - condition: ${ref != ""}
@@ -108,11 +118,7 @@ main:
                         - type: "workbench-instance"
                         - datetime_now: ${time.format(sys.now())}
 
-                        # Extract user name and create unique NB Name and service account name
-                        - user_name: '${text.split(user_email, "@")}'
-                        - user_name_list: '${text.split(user_name[0], ".")}'
-                        - instance_id: '${ text.substring("nb-" + research_area + "-" + user_name_list[1] + "-" + user_name_list[0]+ref, 0, 62)}'
-                        - service_account_name: '${ "n-" + research_area +  ref + "-" + user_name_list[1] + "-" + user_name_list[0]}'
+
 
                         # Default response
                         - create_response: ""
@@ -122,19 +128,38 @@ main:
                             state: "unknown"
                             comment: ""
 
+                        # Project Level Roles for Service Account
+                        - project_level_roles: [
+                            "roles/logging.logWriter", 
+                            "roles/monitoring.metricWriter", 
+                            "projects/sandbox-pughd/roles/luda.notebook.serviceaccount",
+                            "projects/sandbox-pughd/roles/test.analysis.notebook.viewer",
+                            "projects/sandbox-pughd/roles/test.analysis.bq.job.create"
+                         ]    
+
                 - define_url:
                     assign:     
                     # Set up URL for call
                       - workbench_parent: '${"projects/"+project_id+"/locations/"+full_zone}'
-                      - workbench_post_url: '${api_url + workbench_parent + "/instances?instanceId=" + instance_id}'
+                      
 
-  
-            
+                - determine_access_method:
+                    switch:
+                        - condition: ${access_mode == "mail"} 
+                          assign:
+                            # Extract user name and create unique NB Name and service account name
+                            - user_name: '${text.split(user_email, "@")}'
+                            - user_name_list: '${text.split(user_name[0], ".")}'
+                            - instance_id: '${ text.substring("nb-" + research_area + "-" + user_name_list[1] + "-" + user_name_list[0]+ref, 0, 62)}'
+                            - service_account_name: '${ "n-" + research_area +  ref + "-" + user_name_list[1] + "-" + user_name_list[0]}'
+                          next: service_account  
+                        - condition: ${access_mode == "service_account"}
+                          next: create_workbench_instance                   
 
         # Create service_account
         - service_account:
             steps:
-                - check_inputs:
+                - check_sa_inputs:
                     switch:
                         - condition: ${access_mode != "mail" and service_account_email == Null}
                           return: ${"You need to supply the service account email for sa access mode"}
@@ -150,7 +175,8 @@ main:
                         argument:
                             project_id: ${project_id}
                             name: ${service_account_name}
-                            service_account_description: ${"Service Account running Workbench Instance " + instance_id + " for " + user_email}
+                            display_name: ${"Workbench Instance sa for " + user_email }
+                            display_description: ${"Service Account running Workbench Instance " + instance_id + " for " + user_email}
                     result: sa_execution_result
                     next: extract_service_account_email        
                 
@@ -159,10 +185,43 @@ main:
                         - condition: ${sa_execution_result.code == 200}
                           assign:
                             - service_account_email: ${sa_execution_result.body.email}
-                          next: create_workbench_instance  
+                          next: apply_service_account_bindings 
                         - condition: true
                           return: ${"could not create service account"}
-                    
+
+        # give service account and user appropriate permissions to create and run notebook
+        # sa needs notebook and monitoring
+        # user requires roles/iam.serviceAccountUser on the sa
+
+        - apply_service_account_bindings:
+            steps:
+                - apply_project_level_bindings:
+                    # parallel: it doesnt like parallel here!
+                        for:
+                            value: role
+                            in: ${project_level_roles}
+                            steps:
+                                - apply_project_role:
+                                    call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.run
+                                    args:
+                                        workflow_id: workflow-iam-binding
+                                        argument: 
+                                            project_id: ${project_id}
+                                            members: ${["serviceAccount:"+service_account_email]}
+                                            role_id: ${role}
+                                            method: "append"
+                - apply_service_accout_user:
+                    call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.run
+                    args:
+                        workflow_id: workflow-serviceaccount-binding
+                        argument:
+                            project_id: ${project_id}
+                            service_account_email: ${service_account_email}
+                            members: ${["user:" + user_email]}
+                            role_id: "roles/iam.serviceAccountUser"
+                            method: "append"
+
+            next: create_workbench_instance         
 
         # Create the Instance
         - create_workbench_instance:
@@ -171,7 +230,7 @@ main:
                     try:
                         call: http.post
                         args:
-                            url: '${workbench_post_url}'
+                            url: '${api_url + workbench_parent + "/instances?instanceId=" + instance_id}'
                             auth:
                                 type: OAuth2
                                 scopes: 'https://www.googleapis.com/auth/cloud-platform'
@@ -192,16 +251,18 @@ main:
                                         proxy-user-mail: '${user_email}'
                                         notebook-disable-downloads: 'true'
                                         notebook-disable-nbconvert: 'true'
+                                        notebook-enable-delete-to-trash: 'false'
+                                        notebook-disable-root: '${string(disable_root)}'
+                                        notebook-disable-terminal: '${string(disable_terminal)}'
+                                        disable-mixer: '${string(disable_dataproc_kernels)}'
+                                        idle-timeout-seconds: '${string(instance_idle_timeout)}'
                                         report-notebook-metrics: 'true'
                                         report-system-health: 'true'
                                         report-event-health: 'true'
                                         install-monitoring-agent: 'true'
                                         block-project-ssh-keys: 'true'
-                                        post-startup-script: '${string(post_startup_script)}'
-                                        notebook-disable-root: '${string(disable_root)}'
-                                        notebook-disable-terminal: '${string(disable_terminal)}'
-                                        disable-mixer: '${string(disable_dataproc_kernels)}'
-                                        idle-timeout-seconds: '${string(instance_idle_timeout)}'
+                                        report-dns-resolution: 'true'
+
                             query:
                                 instanceId: '${instance_id}'    
                         result: create_response
@@ -284,7 +345,7 @@ main:
         - create_firestore_document:
             call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.run
             args:
-                workflow_id: workflow-workbench-patch-firestore-doc
+                workflow_id: workflow-workbench-patch-firestore-doc-user-focussed
                 argument:
                     firestore_project_id: ${firestore_project_id}
                     instance: ${get_execution_results}
@@ -302,6 +363,16 @@ main:
                             project_id: ${project_id}
                             dataset_id: ${wip_dataset}
                             role_id: ${analyst_wip_dataset_role_id}
+                            service_account_emails: ${[service_account_email]}
+                # need to be able to list models to use BQ tool
+                - update_wip_dataset_models:
+                    call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.run
+                    args:
+                        workflow_id: workflow-bigquery-dataset-binding
+                        argument:
+                            project_id: ${project_id}
+                            dataset_id: ${wip_dataset}
+                            role_id: "projects/sandbox-pughd/roles/test.analysis.bq.model.user"
                             service_account_emails: ${[service_account_email]}
                 - update_review_dataset:
                     call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.run
@@ -330,7 +401,18 @@ main:
                             bucket: ${review_bucket}
                             role_id: ${analyst_wip_bucket_role_id}
                             members: ${["serviceAccount:"+service_account_email]}                         
-            next: complete                 
+            next: update_principal_list     
+
+        - update_principal_list:
+            call: googleapis.workflowexecutions.v1.projects.locations.workflows.executions.run
+            args:
+                workflow_id: workflow-update-storage-object
+                argument:
+                    bucket_id: "sandbox-pughd-tfstate"
+                    object_id: "instance_sa_email_list.txt"
+                    content: ${ "," + service_account_email }
+                    type: "append"    
+            next: complete
 
         - complete:
             steps:
@@ -342,7 +424,7 @@ main:
                         "firestore_status": 
                             "added_to_firestore_flag": ${add_firestore_doc}
                             "firestore_create_response":
-                                ${patch_response}
+                                ${fs_execution_result}
                         "create_status": ${create_status}    
                         "create_response":
                             ${create_response}
