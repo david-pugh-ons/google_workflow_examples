@@ -1,0 +1,43 @@
+# Example Workflow to replace/append content to a Google Storage Object
+# Inputs:
+# - bucket_id
+# - object_id
+# - content
+# - update_type (defaults to append)
+
+main:
+    params: [input]
+    steps:
+    - get_inputs:
+        assign:
+            - bucket_id: ${map.get(input, "bucket_id")}
+            - object_id: ${map.get(input, "object_id")}
+            - content: ${map.get(input, "content")}
+            - type: ${default(map.get(input, "update_type"), "append")}
+
+    - content:
+        switch:
+        - condition: ${type == "append"}
+          steps:
+            - get_current_content:
+                call: googleapis.storage.v1.objects.get
+                args:
+                    bucket: ${bucket_id}
+                    object: ${object_id}
+                    alt: "media"
+                result: getResult
+            - append_content:
+                assign:
+                    - content: ${getResult + content}
+
+    - patch:
+        call: googleapis.storage.v1.objects.insert
+        args:
+            bucket: ${bucket_id}
+            name: ${object_id}
+            body: ${content}
+
+        result: insertResult
+
+    - complete:
+        return: '${getResult}'
